@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+
+# Pipeline output
+output/
+*.pmtiles
+*.geojson
+
+# Test cache
+.pytest_cache/
+.coverage
+
+# Secrets — never commit
+.env
+*.env

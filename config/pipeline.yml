@@ -1,0 +1,61 @@
+# Pipeline runtime configuration (SR-P-04)
+#
+# Secrets (R2 credentials) are NOT here — they are read from environment variables.
+# See pipeline/config.py for the variable names.
+
+# Where to write intermediate and final build artefacts.
+# This path is relative to the pipeline working directory.
+output_dir: output
+
+# Geographic scope for v1 (SR-P-04, OQ-01: Europe at launch).
+# List the Wikidata country QIDs to include.
+# To expand scope in future: add more QIDs here. No query code changes required.
+geographic_scope:
+  country_qids:
+    # Western Europe
+    - Q145    # United Kingdom
+    - Q142    # France
+    - Q183    # Germany
+    - Q29     # Spain
+    - Q45     # Portugal
+    - Q38     # Italy
+    - Q40     # Austria
+    - Q55     # Netherlands
+    - Q31     # Belgium
+    - Q32     # Luxembourg
+    - Q39     # Switzerland
+    - Q347    # Liechtenstein
+    - Q27     # Ireland
+
+    # Northern Europe
+    - Q35     # Denmark
+    - Q20     # Norway
+    - Q34     # Sweden
+    - Q33     # Finland
+    - Q189    # Iceland
+
+    # Eastern Europe
+    - Q36     # Poland
+    - Q213    # Czech Republic
+    - Q214    # Slovakia
+    - Q28     # Hungary
+    - Q218    # Romania
+    - Q219    # Bulgaria
+    - Q220    # Serbia (note: use current Wikidata QID)
+    - Q224    # Croatia
+    - Q225    # Bosnia and Herzegovina
+    - Q236    # Montenegro
+    - Q229    # North Macedonia
+    - Q222    # Albania
+    - Q41     # Greece
+    - Q241    # Cyprus
+
+    # Baltic
+    - Q211    # Latvia
+    - Q212    # Estonia
+    - Q37     # Lithuania
+
+    # Post-Soviet Europe
+    - Q230    # Ukraine
+    - Q184    # Belarus
+    - Q233    # Moldova

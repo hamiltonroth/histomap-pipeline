@@ -1,0 +1,158 @@
+"""
+Wikidata source adapter (SR-P-01 to SR-P-06, SR-P-07).
+
+Responsibilities:
+- Build and execute one SPARQL query per category
+- Translate raw Wikidata results into PlaceRecord objects
+- Deduplicate by QID
+- Apply geographic scope filter
+
+Nothing below this module knows about SPARQL or Wikidata QIDs.
+"""
+
+import logging
+import time
+from urllib.parse import urlparse
+
+from SPARQLWrapper import SPARQLWrapper, JSON
+
+from pipeline.models import PlaceRecord
+
+log = logging.getLogger(__name__)
+
+_SPARQL_ENDPOINT = "https://query.wikidata.org/sparql"
+_USER_AGENT = "histomap-pipeline/0.1 (https://github.com/private)"
+_RETRY_ATTEMPTS = 3
+_RETRY_DELAY_S = 10
+
+
+def _build_query(qids: list[str], scope_filter: str) -> str:
+    qid_values = " ".join(f"wd:{q}" for q in qids)
+    return f"""
+SELECT DISTINCT ?place ?placeLabel ?coords ?desc ?image ?inception ?wpArticle WHERE {{
+  VALUES ?type {{ {qid_values} }}
+  ?place wdt:P31/wdt:P279* ?type .
+  ?place wdt:P625 ?coords .
+  {scope_filter}
+  OPTIONAL {{ ?place wdt:P571 ?inception }}
+  OPTIONAL {{ ?place wdt:P18 ?image }}
+  OPTIONAL {{
+    ?place schema:description ?desc .
+    FILTER(LANG(?desc) = "en")
+  }}
+  OPTIONAL {{
+    ?wpArticle schema:about ?place ;
+               schema:isPartOf <https://en.wikipedia.org/> .
+  }}
+  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en" }}
+}}
+"""
+
+
+def _scope_filter(scope_config: dict) -> str:
+    """
+    Build a SPARQL filter clause from the scope config.
+    Supports country QID lists (SR-P-04 — scope is a config parameter).
+    """
+    country_qids = scope_config.get("country_qids", [])
+    if not country_qids:
+        return ""
+    values = " ".join(f"wd:{q}" for q in country_qids)
+    return f"VALUES ?country {{ {values} }}\n  ?place wdt:P17 ?country ."
+
+
+def _parse_coords(coords_str: str) -> tuple[float, float] | None:
+    """Parse 'Point(lon lat)' WKT returned by Wikidata."""
+    try:
+        inner = coords_str.strip().removeprefix("Point(").removesuffix(")")
+        lon_str, lat_str = inner.split()
+        return float(lon_str), float(lat_str)
+    except Exception:
+        return None
+
+
+def _parse_inception(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        # Wikidata returns ISO8601: "+1066-01-01T00:00:00Z" or "-0044-..."
+        raw = value.lstrip("+")
+        year = int(raw.split("-")[0]) if not raw.startswith("-") else -int(raw.lstrip("-").split("-")[0])
+        return year
+    except Exception:
+        return None
+
+
+def _wikipedia_title_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    try:
+        return urlparse(url).path.lstrip("/wiki/")
+    except Exception:
+        return None
+
+
+class WikidataAdapter:
+    def __init__(self, config: dict) -> None:
+        self._config = config
+        self._sparql = SPARQLWrapper(_SPARQL_ENDPOINT)
+        self._sparql.addCustomHttpHeader("User-Agent", _USER_AGENT)
+        self._sparql.setReturnFormat(JSON)
+
+    def fetch_all(self) -> list[PlaceRecord]:
+        scope = self._config.get("geographic_scope", {})
+        scope_clause = _scope_filter(scope)
+        seen: dict[str, PlaceRecord] = {}
+
+        for cat in self._config["categories"]:
+            key = cat["key"]
+            qids = cat["qids"]
+            log.info("  Querying category: %s (%d QIDs)", key, len(qids))
+            results = self._run_query(key, qids, scope_clause)
+            new = 0
+            for r in results:
+                if r.id not in seen:
+                    seen[r.id] = r
+                    new += 1
+            log.info("  → %d new records (total so far: %d)", new, len(seen))
+
+        return list(seen.values())
+
+    def _run_query(self, category: str, qids: list[str], scope_clause: str) -> list[PlaceRecord]:
+        query = _build_query(qids, scope_clause)
+        for attempt in range(1, _RETRY_ATTEMPTS + 1):
+            try:
+                self._sparql.setQuery(query)
+                raw = self._sparql.queryAndConvert()
+                return self._parse_results(raw, category)
+            except Exception as exc:
+                log.warning("Query attempt %d/%d failed for %s: %s", attempt, _RETRY_ATTEMPTS, category, exc)
+                if attempt < _RETRY_ATTEMPTS:
+                    time.sleep(_RETRY_DELAY_S)
+        log.error("All attempts failed for category %s — skipping", category)
+        return []
+
+    def _parse_results(self, raw: dict, category: str) -> list[PlaceRecord]:
+        records = []
+        for binding in raw.get("results", {}).get("bindings", []):
+            qid = binding["place"]["value"].rsplit("/", 1)[-1]
+            coords_raw = binding.get("coords", {}).get("value")
+            if not coords_raw:
+                continue
+            parsed = _parse_coords(coords_raw)
+            if parsed is None:
+                continue
+            lon, lat = parsed
+
+            records.append(PlaceRecord(
+                id=qid,
+                name=binding.get("placeLabel", {}).get("value", ""),
+                category=category,
+                lon=lon,
+                lat=lat,
+                inception=_parse_inception(binding.get("inception", {}).get("value")),
+                image_url=binding.get("image", {}).get("value") or None,
+                description=binding.get("desc", {}).get("value") or None,
+                wikipedia_url=binding.get("wpArticle", {}).get("value") or None,
+            ))
+        return records

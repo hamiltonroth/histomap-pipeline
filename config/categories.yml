@@ -1,0 +1,73 @@
+# Category-to-QID mapping (SR-P-09)
+#
+# Each entry defines one historical place category.
+#   key   — internal identifier; matches the "category" field in PlaceRecord and GeoJSON
+#   label — display name shown in the UI
+#   qids  — Wikidata QIDs for `instance of` filtering; subclass traversal is applied automatically
+#           (wdt:P31/wdt:P279*). Add more QIDs to broaden the match for a category.
+#
+# To add a category: append an entry here. No pipeline code changes required.
+# To remove a category: delete or comment out the entry.
+
+categories:
+
+  - key: castle
+    label: Castle
+    qids:
+      - Q23413    # castle
+      - Q1145776  # fortified house
+      - Q4022     # fortress (broad; filtered further by coordinates)
+
+  - key: battlefield
+    label: Battlefield
+    qids:
+      - Q4895882  # battlefield
+      - Q188055   # siege (land)
+
+  - key: naval_battle
+    label: Naval Battle
+    qids:
+      - Q178561   # naval battle
+
+  - key: church
+    label: Church
+    qids:
+      - Q16970    # church building
+      - Q2977     # cathedral
+      - Q108325   # chapel
+
+  - key: monastery
+    label: Monastery
+    qids:
+      - Q44613    # monastery
+      - Q160742   # abbey
+      - Q793057   # priory
+
+  - key: fortification
+    label: Fortification
+    qids:
+      - Q1081138  # fortification
+      - Q57821    # city walls
+      - Q3257686  # ancient fortification
+
+  - key: shipwreck
+    label: Shipwreck
+    qids:
+      - Q852190   # shipwreck
+
+  - key: archaeological_site
+    label: Archaeological Site
+    qids:
+      - Q839954   # archaeological site
+      - Q15661340 # ancient settlement
+
+  - key: siege
+    label: Siege
+    qids:
+      - Q188055   # siege
+
+  - key: historic_bridge
+    label: Historic Bridge
+    qids:
+      - Q12280    # bridge
+      - Q1788454  # ancient bridge
