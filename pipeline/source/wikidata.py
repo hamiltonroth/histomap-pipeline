@@ -24,6 +24,7 @@ _SPARQL_ENDPOINT = "https://query.wikidata.org/sparql"
 _USER_AGENT = "histomap-pipeline/0.1 (https://github.com/private)"
 _RETRY_ATTEMPTS = 3
 _RETRY_DELAY_S = 10
+_RATE_LIMIT_DELAY_S = 65
 
 
 def _build_query(qids: list[str], scope_filter: str) -> str:
@@ -103,8 +104,9 @@ class WikidataAdapter:
         scope = self._config.get("geographic_scope", {})
         scope_clause = _scope_filter(scope)
         seen: dict[str, PlaceRecord] = {}
+        categories = self._config["categories"]
 
-        for cat in self._config["categories"]:
+        for idx, cat in enumerate(categories):
             key = cat["key"]
             qids = cat["qids"]
             log.info("  Querying category: %s (%d QIDs)", key, len(qids))
@@ -115,6 +117,11 @@ class WikidataAdapter:
                     seen[r.id] = r
                     new += 1
             log.info("  → %d new records (total so far: %d)", new, len(seen))
+
+            # WDQS is currently aggressively throttled to 1 request/minute.
+            if idx < len(categories) - 1:
+                log.info("  Waiting %ds before next category query to respect WDQS rate limit", _RATE_LIMIT_DELAY_S)
+                time.sleep(_RATE_LIMIT_DELAY_S)
 
         return list(seen.values())
 
@@ -128,9 +135,16 @@ class WikidataAdapter:
             except Exception as exc:
                 log.warning("Query attempt %d/%d failed for %s: %s", attempt, _RETRY_ATTEMPTS, category, exc)
                 if attempt < _RETRY_ATTEMPTS:
-                    time.sleep(_RETRY_DELAY_S)
+                    time.sleep(self._retry_delay_seconds(exc))
         log.error("All attempts failed for category %s — skipping", category)
         return []
+
+    @staticmethod
+    def _retry_delay_seconds(exc: Exception) -> int:
+        msg = str(exc).lower()
+        if "429" in msg or "rate-limit" in msg or "rate limit" in msg or "rate-limiting" in msg:
+            return _RATE_LIMIT_DELAY_S
+        return _RETRY_DELAY_S
 
     def _parse_results(self, raw: dict, category: str) -> list[PlaceRecord]:
         records = []

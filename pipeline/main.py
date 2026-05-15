@@ -38,6 +38,11 @@ def main() -> None:
     adapter = WikidataAdapter(config)
     records = adapter.fetch_all()
     log.info("Fetched %d unique place records", len(records))
+    if not records:
+        raise RuntimeError(
+            "Wikidata returned zero records (likely temporary WDQS rate limiting/outage). "
+            "Aborting before tile build to keep the previous published PMTiles intact."
+        )
 
     log.info("Step 2/5 — enriching records")
     records = enrich(records, config)
