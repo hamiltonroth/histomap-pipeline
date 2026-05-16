@@ -37,7 +37,6 @@ _QUERY_PREFIXES = """\
 PREFIX wd: <http://www.wikidata.org/entity/>
 PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 PREFIX schema: <http://schema.org/>
-PREFIX geof: <http://www.opengis.net/def/function/geosparql/>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 """
 
@@ -188,8 +187,8 @@ class WikidataAdapter:
                 except Exception as exc:
                     if self._is_rate_limited(exc):
                         was_rate_limited = True
-                    log.debug("Endpoint %s attempt %d/%d failed for %s: %s",
-                               ep_name, attempt, _RETRY_ATTEMPTS, category, exc)
+                    log.warning("Endpoint %s attempt %d/%d failed for %s: %s",
+                                ep_name, attempt, _RETRY_ATTEMPTS, category, exc)
             log.warning("Query attempt %d/%d: all endpoints failed for %s",
                         attempt, _RETRY_ATTEMPTS, category)
             if attempt < _RETRY_ATTEMPTS:

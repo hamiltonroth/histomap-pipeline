@@ -23,11 +23,12 @@ def load_config() -> dict:
     with categories_path.open() as f:
         config["categories"] = yaml.safe_load(f)["categories"]
 
-    # Inject secrets from environment — never from files
-    config["r2_access_key_id"] = _require_env("R2_ACCESS_KEY_ID")
-    config["r2_secret_access_key"] = _require_env("R2_SECRET_ACCESS_KEY")
-    config["r2_endpoint_url"] = _require_env("R2_ENDPOINT_URL")
-    config["r2_bucket"] = _require_env("R2_BUCKET")
+    # Inject secrets from environment — never from files.
+    # .strip() guards against secrets pasted with trailing newlines in GitHub UI.
+    config["r2_access_key_id"] = _require_env("R2_ACCESS_KEY_ID").strip()
+    config["r2_secret_access_key"] = _require_env("R2_SECRET_ACCESS_KEY").strip()
+    config["r2_endpoint_url"] = _require_env("R2_ENDPOINT_URL").strip()
+    config["r2_bucket"] = _require_env("R2_BUCKET").strip()
 
     return config
 
