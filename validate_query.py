@@ -52,7 +52,10 @@ parser.add_argument("categories", nargs="*")
 parser.add_argument("--qid", dest="qids", action="append", default=[])
 parser.add_argument("--limit", type=int, default=3)
 parser.add_argument("--timeout", type=int, default=30)
-parser.add_argument("--sleep", type=int, default=5)
+parser.add_argument("--endpoint", default="https://qlever.cs.uni-freiburg.de/api/wikidata",
+                    help="SPARQL endpoint URL (default: QLever Wikidata)")
+parser.add_argument("--sleep", type=int, default=2,
+                    help="Seconds to sleep between queries (default 2; use 65 for WDQS)")
 args = parser.parse_args()
 
 config = load_query_config()
@@ -65,8 +68,8 @@ if not categories:
 
 scope_clause = _scope_filter(config.get("geographic_scope", {}))
 
-sparql = SPARQLWrapper("https://query.wikidata.org/sparql")
-sparql.addCustomHttpHeader("User-Agent", "histomap-validate/0.1")
+sparql = SPARQLWrapper(args.endpoint)
+sparql.addCustomHttpHeader("User-Agent", "histomap-validate/0.1 (mailto:rothhamilton@gmail.com)")
 sparql.setReturnFormat(JSON)
 sparql.setTimeout(args.timeout)
 

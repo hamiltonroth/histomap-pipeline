@@ -20,21 +20,37 @@ from pipeline.models import PlaceRecord
 
 log = logging.getLogger(__name__)
 
-_SPARQL_ENDPOINT = "https://query.wikidata.org/sparql"
-_USER_AGENT = "histomap-pipeline/0.1 (https://github.com/private)"
+# Endpoints tried in order. QLever is a community-hosted Wikidata SPARQL mirror
+# that runs on different infrastructure and is not subject to WDQS outage throttle rules.
+_SPARQL_ENDPOINTS = [
+    ("QLever", "https://qlever.cs.uni-freiburg.de/api/wikidata"),
+    ("WDQS",   "https://query.wikidata.org/sparql"),
+]
+_USER_AGENT = "histomap-pipeline/0.1 (mailto:rothhamilton@gmail.com)"
 _RETRY_ATTEMPTS = 3
 _RETRY_DELAY_S = 10
 _RATE_LIMIT_DELAY_S = 65
 
+# Explicit PREFIX declarations — required by some endpoints (e.g. QLever) that
+# do not inject Wikidata prefixes automatically.
+_QUERY_PREFIXES = """\
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX schema: <http://schema.org/>
+PREFIX geof: <http://www.opengis.net/def/function/geosparql/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+"""
+
 
 def _build_query(qids: list[str], scope_filter: str) -> str:
     qid_values = " ".join(f"wd:{q}" for q in qids)
-    return f"""#TIMEOUT: 25000
+    return f"""{_QUERY_PREFIXES}
 SELECT DISTINCT ?place ?placeLabel ?coords ?desc ?image ?inception ?wpArticle WHERE {{
   VALUES ?type {{ {qid_values} }}
   ?place wdt:P31 ?type .
   ?place wdt:P625 ?coords .
   {scope_filter}
+  OPTIONAL {{ ?place rdfs:label ?placeLabel . FILTER(LANG(?placeLabel) = "en") }}
   OPTIONAL {{ ?place wdt:P571 ?inception }}
   OPTIONAL {{ ?place wdt:P18 ?image }}
   OPTIONAL {{
@@ -45,7 +61,6 @@ SELECT DISTINCT ?place ?placeLabel ?coords ?desc ?image ?inception ?wpArticle WH
     ?wpArticle schema:about ?place ;
                schema:isPartOf <https://en.wikipedia.org/> .
   }}
-  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en" }}
 }}
 """
 
@@ -53,21 +68,9 @@ SELECT DISTINCT ?place ?placeLabel ?coords ?desc ?image ?inception ?wpArticle WH
 def _scope_filter(scope_config: dict) -> str:
     """
     Build a SPARQL filter clause from the scope config.
-    Prefers 'bounding_box' (lat/lon BIND+FILTER — fast, coordinate-index-based).
-    Falls back to 'country_qids' (wdt:P17 VALUES join — slower, kept for compatibility).
+    Uses a VALUES + wdt:P17 country join — portable across WDQS and QLever.
+    QLever handles this join efficiently; WDQS may be slower on large categories.
     """
-    bbox = scope_config.get("bounding_box")
-    if bbox:
-        min_lat = float(bbox["min_lat"])
-        max_lat = float(bbox["max_lat"])
-        min_lon = float(bbox["min_lon"])
-        max_lon = float(bbox["max_lon"])
-        return (
-            f"BIND(geof:latitude(?coords) AS ?lat)\n"
-            f"  BIND(geof:longitude(?coords) AS ?lon)\n"
-            f"  FILTER(?lat >= {min_lat} && ?lat <= {max_lat} "
-            f"&& ?lon >= {min_lon} && ?lon <= {max_lon})"
-        )
     country_qids = scope_config.get("country_qids", [])
     if not country_qids:
         return ""
@@ -76,9 +79,12 @@ def _scope_filter(scope_config: dict) -> str:
 
 
 def _parse_coords(coords_str: str) -> tuple[float, float] | None:
-    """Parse 'Point(lon lat)' WKT returned by Wikidata."""
+    """Parse WKT Point literal. Handles both 'Point(lon lat)' (WDQS) and 'POINT(lon lat)' (QLever)."""
     try:
-        inner = coords_str.strip().removeprefix("Point(").removesuffix(")")
+        upper = coords_str.strip().upper()
+        if not upper.startswith("POINT(") or not upper.endswith(")"):
+            return None
+        inner = coords_str.strip()[6:-1]  # slice using original case to preserve numeric precision
         lon_str, lat_str = inner.split()
         return float(lon_str), float(lat_str)
     except Exception:
@@ -109,9 +115,13 @@ def _wikipedia_title_from_url(url: str | None) -> str | None:
 class WikidataAdapter:
     def __init__(self, config: dict) -> None:
         self._config = config
-        self._sparql = SPARQLWrapper(_SPARQL_ENDPOINT)
-        self._sparql.addCustomHttpHeader("User-Agent", _USER_AGENT)
-        self._sparql.setReturnFormat(JSON)
+        self._clients: list[tuple[str, SPARQLWrapper]] = []
+        for name, url in _SPARQL_ENDPOINTS:
+            client = SPARQLWrapper(url)
+            client.addCustomHttpHeader("User-Agent", _USER_AGENT)
+            client.setReturnFormat(JSON)
+            client.setTimeout(60)
+            self._clients.append((name, client))
 
     def fetch_all(self) -> list[PlaceRecord]:
         scope = self._config.get("geographic_scope", {})
@@ -164,20 +174,26 @@ class WikidataAdapter:
         return [], was_rate_limited
 
     def _run_query_once(self, category: str, qids: list[str], scope_clause: str) -> tuple[list[PlaceRecord], bool]:
+        """Try each endpoint in order per attempt. Returns on first success."""
         query = _build_query(qids, scope_clause)
         was_rate_limited = False
         for attempt in range(1, _RETRY_ATTEMPTS + 1):
-            try:
-                self._sparql.setQuery(query)
-                raw = self._sparql.queryAndConvert()
-                return self._parse_results(raw, category), was_rate_limited
-            except Exception as exc:
-                log.warning("Query attempt %d/%d failed for %s: %s", attempt, _RETRY_ATTEMPTS, category, exc)
-                delay = self._retry_delay_seconds(exc)
-                if self._is_rate_limited(exc):
-                    was_rate_limited = True
-                if attempt < _RETRY_ATTEMPTS:
-                    time.sleep(delay)
+            for ep_name, client in self._clients:
+                try:
+                    client.setQuery(query)
+                    raw = client.queryAndConvert()
+                    if ep_name != _SPARQL_ENDPOINTS[0][0]:
+                        log.info("    Succeeded via fallback endpoint %s", ep_name)
+                    return self._parse_results(raw, category), was_rate_limited
+                except Exception as exc:
+                    if self._is_rate_limited(exc):
+                        was_rate_limited = True
+                    log.debug("Endpoint %s attempt %d/%d failed for %s: %s",
+                               ep_name, attempt, _RETRY_ATTEMPTS, category, exc)
+            log.warning("Query attempt %d/%d: all endpoints failed for %s",
+                        attempt, _RETRY_ATTEMPTS, category)
+            if attempt < _RETRY_ATTEMPTS:
+                time.sleep(_RETRY_DELAY_S)
         return [], was_rate_limited
 
     @staticmethod

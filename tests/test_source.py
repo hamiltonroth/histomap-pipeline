@@ -23,6 +23,11 @@ class TestParseCoords:
         assert lon == pytest.approx(-3.7038)
         assert lat == pytest.approx(40.4168)
 
+    def test_uppercase_point(self):
+        lon, lat = _parse_coords("POINT(2.3522 48.8566)")
+        assert lon == pytest.approx(2.3522)
+        assert lat == pytest.approx(48.8566)
+
     def test_invalid_returns_none(self):
         assert _parse_coords("invalid") is None
 
@@ -48,18 +53,16 @@ class TestScopeFilter:
     def test_empty_scope_returns_empty_string(self):
         assert _scope_filter({}) == ""
 
-    def test_bounding_box_preferred(self):
-        result = _scope_filter({"bounding_box": {"min_lat": 27, "max_lat": 72, "min_lon": -30, "max_lon": 45}})
-        assert "geof:latitude" in result
-        assert "geof:longitude" in result
-        assert "27" in result
-        assert "72" in result
-
-    def test_country_qids_fallback(self):
+    def test_country_qids(self):
         result = _scope_filter({"country_qids": ["Q142", "Q145"]})
         assert "wd:Q142" in result
         assert "wd:Q145" in result
         assert "wdt:P17" in result
+
+    def test_bounding_box_without_country_qids_returns_empty(self):
+        # bounding_box is not used in SPARQL; geographic scope requires country_qids
+        result = _scope_filter({"bounding_box": {"min_lat": 27, "max_lat": 72, "min_lon": -30, "max_lon": 45}})
+        assert result == ""
 
 
 class TestBuildQuery:
@@ -72,9 +75,19 @@ class TestBuildQuery:
         query = _build_query(["Q23413"], "")
         assert "wdt:P31" in query
 
-    def test_timeout_hint_present(self):
+    def test_rdfs_label_present(self):
         query = _build_query(["Q23413"], "")
-        assert "#TIMEOUT" in query
+        assert "rdfs:label" in query
+
+    def test_no_service_wikibase_label(self):
+        query = _build_query(["Q23413"], "")
+        assert "SERVICE wikibase:label" not in query
+
+    def test_prefix_declarations_present(self):
+        query = _build_query(["Q23413"], "")
+        assert "PREFIX wd:" in query
+        assert "PREFIX wdt:" in query
+        assert "PREFIX rdfs:" in query
 
     def test_coordinates_filter_present(self):
         query = _build_query(["Q23413"], "")

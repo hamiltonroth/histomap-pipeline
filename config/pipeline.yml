@@ -8,17 +8,9 @@
 output_dir: output
 
 # Geographic scope for v1 (SR-P-04, OQ-01: Europe at launch).
-# bounding_box is preferred: it filters by lat/lon directly on the coordinate index,
-# which is far cheaper on WDQS than a VALUES + wdt:P17 country join.
-# Rough Europe bounds: lat 27–72 N, lon -30–45 E.
+# Uses a VALUES + wdt:P17 country join — portable across WDQS and QLever.
+# (QLever handles this join efficiently; it is the primary endpoint.)
 geographic_scope:
-  bounding_box:
-    min_lat: 27
-    max_lat: 72
-    min_lon: -30
-    max_lon: 45
-
-  # country_qids kept for reference; not used when bounding_box is present.
   country_qids:
     # Western Europe
     - Q145    # United Kingdom
