@@ -32,7 +32,7 @@ def _build_query(qids: list[str], scope_filter: str) -> str:
     return f"""
 SELECT DISTINCT ?place ?placeLabel ?coords ?desc ?image ?inception ?wpArticle WHERE {{
   VALUES ?type {{ {qid_values} }}
-  ?place wdt:P31/wdt:P279* ?type .
+  ?place wdt:P31 ?type .
   ?place wdt:P625 ?coords .
   {scope_filter}
   OPTIONAL {{ ?place wdt:P571 ?inception }}
@@ -106,11 +106,17 @@ class WikidataAdapter:
         seen: dict[str, PlaceRecord] = {}
         categories = self._config["categories"]
 
+        last_was_rate_limited = False
         for idx, cat in enumerate(categories):
+            # Only delay if the previous query was 429-throttled
+            if last_was_rate_limited and idx > 0:
+                log.info("  Previous query was rate-limited — waiting %ds before next", _RATE_LIMIT_DELAY_S)
+                time.sleep(_RATE_LIMIT_DELAY_S)
+
             key = cat["key"]
             qids = cat["qids"]
             log.info("  Querying category: %s (%d QIDs)", key, len(qids))
-            results = self._run_query(key, qids, scope_clause)
+            results, last_was_rate_limited = self._run_query(key, qids, scope_clause)
             new = 0
             for r in results:
                 if r.id not in seen:
@@ -118,26 +124,31 @@ class WikidataAdapter:
                     new += 1
             log.info("  → %d new records (total so far: %d)", new, len(seen))
 
-            # WDQS is currently aggressively throttled to 1 request/minute.
-            if idx < len(categories) - 1:
-                log.info("  Waiting %ds before next category query to respect WDQS rate limit", _RATE_LIMIT_DELAY_S)
-                time.sleep(_RATE_LIMIT_DELAY_S)
-
         return list(seen.values())
 
-    def _run_query(self, category: str, qids: list[str], scope_clause: str) -> list[PlaceRecord]:
+    def _run_query(self, category: str, qids: list[str], scope_clause: str) -> tuple[list[PlaceRecord], bool]:
+        """Returns (records, was_rate_limited)."""
         query = _build_query(qids, scope_clause)
+        was_rate_limited = False
         for attempt in range(1, _RETRY_ATTEMPTS + 1):
             try:
                 self._sparql.setQuery(query)
                 raw = self._sparql.queryAndConvert()
-                return self._parse_results(raw, category)
+                return self._parse_results(raw, category), was_rate_limited
             except Exception as exc:
                 log.warning("Query attempt %d/%d failed for %s: %s", attempt, _RETRY_ATTEMPTS, category, exc)
+                delay = self._retry_delay_seconds(exc)
+                if self._is_rate_limited(exc):
+                    was_rate_limited = True
                 if attempt < _RETRY_ATTEMPTS:
-                    time.sleep(self._retry_delay_seconds(exc))
+                    time.sleep(delay)
         log.error("All attempts failed for category %s — skipping", category)
-        return []
+        return [], was_rate_limited
+
+    @staticmethod
+    def _is_rate_limited(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "429" in msg or "rate-limit" in msg or "rate limit" in msg or "rate-limiting" in msg
 
     @staticmethod
     def _retry_delay_seconds(exc: Exception) -> int:
