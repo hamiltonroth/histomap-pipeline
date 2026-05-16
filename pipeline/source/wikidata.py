@@ -128,6 +128,29 @@ class WikidataAdapter:
 
     def _run_query(self, category: str, qids: list[str], scope_clause: str) -> tuple[list[PlaceRecord], bool]:
         """Returns (records, was_rate_limited)."""
+        records, was_rate_limited = self._run_query_once(category, qids, scope_clause)
+        if records:
+            return records, was_rate_limited
+
+        if len(qids) == 1:
+            log.error("All attempts failed for category %s — skipping", category)
+            return [], was_rate_limited
+
+        log.warning("Category %s failed as a combined query — retrying per QID", category)
+        fallback_records: list[PlaceRecord] = []
+        for qid in qids:
+            qid_records, qid_rate_limited = self._run_query_once(category, [qid], scope_clause)
+            fallback_records.extend(qid_records)
+            was_rate_limited = was_rate_limited or qid_rate_limited
+
+        if fallback_records:
+            log.info("Recovered %d records for %s via per-QID fallback", len(fallback_records), category)
+            return fallback_records, was_rate_limited
+
+        log.error("All attempts failed for category %s — skipping", category)
+        return [], was_rate_limited
+
+    def _run_query_once(self, category: str, qids: list[str], scope_clause: str) -> tuple[list[PlaceRecord], bool]:
         query = _build_query(qids, scope_clause)
         was_rate_limited = False
         for attempt in range(1, _RETRY_ATTEMPTS + 1):
@@ -142,7 +165,6 @@ class WikidataAdapter:
                     was_rate_limited = True
                 if attempt < _RETRY_ATTEMPTS:
                     time.sleep(delay)
-        log.error("All attempts failed for category %s — skipping", category)
         return [], was_rate_limited
 
     @staticmethod
