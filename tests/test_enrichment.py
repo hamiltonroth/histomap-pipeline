@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pipeline.enrichment import _resolve_thumbnail, _fetch_wikipedia_summary, _md5_prefix
+from pipeline.enrichment import _resolve_thumbnail, _fetch_wikipedia_summary, _md5_prefix, enrich
 from pipeline.models import PlaceRecord
 
 
@@ -62,33 +62,60 @@ class TestFetchWikipediaSummary:
         result = _fetch_wikipedia_summary("https://en.wikipedia.org/wiki/Foo", mock_session)
         assert result is None
 
-    def test_pipeline_continues_on_failure(self):
-        """SR-P-12: single-record enrichment failure must not abort the pipeline."""
-        from pipeline.enrichment import enrich
 
+class TestEnrich:
+    def _make_record(self, qid, name, **kwargs):
+        return PlaceRecord(id=qid, name=name, category="castle", lon=2.0, lat=48.0, **kwargs)
+
+    def test_skips_wikipedia_when_description_already_present(self):
+        """Records with a Wikidata description must not trigger any HTTP call."""
+        record = self._make_record("Q1", "Castle A",
+                                   description="Already has a description",
+                                   wikipedia_url="https://en.wikipedia.org/wiki/Castle_A")
+        with patch("pipeline.enrichment.requests.Session") as mock_session_cls:
+            enrich([record], {})
+            mock_session_cls.assert_not_called()
+
+        assert record.description == "Already has a description"
+
+    def test_batch_fetch_called_for_records_without_description(self):
+        """Records with a wikipedia_url but no description must be batch-enriched."""
         records = [
-            PlaceRecord(id="Q1", name="Castle A", category="castle", lon=2.0, lat=48.0,
-                        wikipedia_url="https://en.wikipedia.org/wiki/Castle_A"),
-            PlaceRecord(id="Q2", name="Castle B", category="castle", lon=3.0, lat=49.0,
-                        wikipedia_url="https://en.wikipedia.org/wiki/Castle_B"),
+            self._make_record("Q1", "Castle A",
+                              wikipedia_url="https://en.wikipedia.org/wiki/Castle_A"),
+            self._make_record("Q2", "Castle B",
+                              wikipedia_url="https://en.wikipedia.org/wiki/Castle_B"),
         ]
-
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "query": {
+                "pages": {
+                    "1": {"title": "Castle A", "extract": "Summary of A"},
+                    "2": {"title": "Castle B", "extract": "Summary of B"},
+                }
+            }
+        }
         with patch("pipeline.enrichment.requests.Session") as mock_session_cls:
             session = MagicMock()
+            session.get.return_value = mock_resp
             mock_session_cls.return_value = session
+            enrich(records, {})
 
-            def side_effect(url, **kwargs):
-                if "Castle_A" in url:
-                    raise ConnectionError("simulated failure")
-                resp = MagicMock()
-                resp.status_code = 200
-                resp.json.return_value = {"extract": "Summary of B"}
-                return resp
+        assert records[0].description == "Summary of A"
+        assert records[1].description == "Summary of B"
 
-            session.get.side_effect = side_effect
-
+    def test_pipeline_continues_on_batch_failure(self):
+        """SR-P-12: a failed batch must not abort the pipeline."""
+        records = [
+            self._make_record("Q1", "Castle A",
+                              wikipedia_url="https://en.wikipedia.org/wiki/Castle_A"),
+        ]
+        with patch("pipeline.enrichment.requests.Session") as mock_session_cls:
+            session = MagicMock()
+            session.get.side_effect = ConnectionError("simulated failure")
+            mock_session_cls.return_value = session
             result = enrich(records, {})
 
-        assert len(result) == 2
-        assert result[0].description is None   # failed record — no description
-        assert result[1].description == "Summary of B"
+        assert len(result) == 1
+        assert result[0].description is None  # failed batch — no description set

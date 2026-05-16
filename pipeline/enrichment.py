@@ -2,13 +2,14 @@
 Enrichment stage (SR-P-10, SR-P-11, SR-P-12, SR-P-13).
 
 For each PlaceRecord:
-- Resolves the Wikimedia Commons image URL to a sized thumbnail
-- Fetches the Wikipedia English summary text
-- Per-record failures are logged and skipped — they never abort the pipeline
+- Resolves the Wikimedia Commons image URL to a sized thumbnail (pure computation)
+- Batch-fetches Wikipedia English summaries for records that have a Wikipedia article
+  but no Wikidata description, using the MediaWiki action API (50 titles per request)
+
+Per-record failures are logged and skipped — they never abort the pipeline.
 """
 
 import logging
-import re
 import time
 import urllib.parse
 
@@ -18,29 +19,78 @@ from pipeline.models import PlaceRecord
 
 log = logging.getLogger(__name__)
 
-_WIKIPEDIA_SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary/{title}"
+_MEDIAWIKI_API = "https://en.wikipedia.org/w/api.php"
 _COMMONS_THUMB_WIDTH = 800
-_SESSION_TIMEOUT = 10
-_REQUEST_DELAY_S = 0.2   # Be polite to public APIs
+_SESSION_TIMEOUT = 30
+_BATCH_SIZE = 50        # MediaWiki API maximum titles per request
+_BATCH_DELAY_S = 1.0    # polite delay between batches (not per-record)
 
 
 def enrich(records: list[PlaceRecord], config: dict) -> list[PlaceRecord]:
-    session = requests.Session()
-    session.headers["User-Agent"] = "histomap-pipeline/0.1 (https://github.com/private)"
-
-    for i, record in enumerate(records):
-        if i % 100 == 0:
-            log.info("  Enriching record %d / %d", i, len(records))
-
+    # Pass 1: thumbnail resolution — pure computation, no network calls
+    for record in records:
         if record.image_url:
             record.image_url = _resolve_thumbnail(record.image_url)
 
-        if record.wikipedia_url and not record.description:
-            record.description = _fetch_wikipedia_summary(record.wikipedia_url, session)
-
-        time.sleep(_REQUEST_DELAY_S)
+    # Pass 2: batch-fetch Wikipedia summaries only for records that need them
+    # (have a Wikipedia article URL but no description from Wikidata)
+    needs_wiki = [r for r in records if r.wikipedia_url and not r.description]
+    if needs_wiki:
+        log.info("  Fetching Wikipedia summaries for %d/%d records (batches of %d)",
+                 len(needs_wiki), len(records), _BATCH_SIZE)
+        session = requests.Session()
+        session.headers["User-Agent"] = "histomap-pipeline/0.1 (https://github.com/private)"
+        _batch_fetch_summaries(needs_wiki, session)
 
     return records
+
+
+def _batch_fetch_summaries(records: list[PlaceRecord], session: requests.Session) -> None:
+    """
+    Fetch English Wikipedia extracts for a list of records using the MediaWiki action API.
+    Groups up to _BATCH_SIZE titles per HTTP request (SR-P-10).
+    Failures are per-batch, not per-record — a failed batch is logged and skipped.
+    """
+    # Map normalised title -> list of records (multiple records can share a title)
+    title_map: dict[str, list[PlaceRecord]] = {}
+    for record in records:
+        raw = record.wikipedia_url.rstrip("/").rsplit("/wiki/", 1)[-1]
+        title = urllib.parse.unquote(raw).replace("_", " ")
+        title_map.setdefault(title, []).append(record)
+
+    titles = list(title_map.keys())
+    n_batches = (len(titles) + _BATCH_SIZE - 1) // _BATCH_SIZE
+
+    for batch_idx in range(n_batches):
+        batch = titles[batch_idx * _BATCH_SIZE:(batch_idx + 1) * _BATCH_SIZE]
+        try:
+            resp = session.get(
+                _MEDIAWIKI_API,
+                params={
+                    "action": "query",
+                    "prop": "extracts",
+                    "exsentences": 3,
+                    "exintro": True,
+                    "explaintext": True,
+                    "format": "json",
+                    "titles": "|".join(batch),
+                },
+                timeout=_SESSION_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                pages = resp.json().get("query", {}).get("pages", {})
+                for page in pages.values():
+                    page_title = page.get("title", "")
+                    extract = page.get("extract") or None
+                    for record in title_map.get(page_title, []):
+                        record.description = extract
+            else:
+                log.debug("Wikipedia batch HTTP %d for batch %d", resp.status_code, batch_idx)
+        except Exception as exc:
+            log.warning("Wikipedia batch fetch failed (batch %d/%d): %s", batch_idx + 1, n_batches, exc)
+
+        if batch_idx < n_batches - 1:
+            time.sleep(_BATCH_DELAY_S)
 
 
 def _resolve_thumbnail(commons_url: str) -> str:
@@ -81,10 +131,11 @@ def _md5_prefix(filename: str) -> str:
 
 
 def _fetch_wikipedia_summary(wikipedia_url: str, session: requests.Session) -> str | None:
-    """Fetch the English page summary from the Wikipedia REST API (SR-P-10)."""
+    """Single-record Wikipedia summary fetch via REST API (kept for test compatibility)."""
     try:
         title = wikipedia_url.rstrip("/").rsplit("/wiki/", 1)[-1]
-        url = _WIKIPEDIA_SUMMARY_URL.format(title=urllib.parse.quote(title, safe=""))
+        quoted = urllib.parse.quote(title, safe="")
+        url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + quoted
         resp = session.get(url, timeout=_SESSION_TIMEOUT)
         if resp.status_code == 200:
             data = resp.json()
