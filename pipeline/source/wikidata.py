@@ -29,7 +29,7 @@ _RATE_LIMIT_DELAY_S = 65
 
 def _build_query(qids: list[str], scope_filter: str) -> str:
     qid_values = " ".join(f"wd:{q}" for q in qids)
-    return f"""
+    return f"""#TIMEOUT: 25000
 SELECT DISTINCT ?place ?placeLabel ?coords ?desc ?image ?inception ?wpArticle WHERE {{
   VALUES ?type {{ {qid_values} }}
   ?place wdt:P31 ?type .
@@ -53,8 +53,21 @@ SELECT DISTINCT ?place ?placeLabel ?coords ?desc ?image ?inception ?wpArticle WH
 def _scope_filter(scope_config: dict) -> str:
     """
     Build a SPARQL filter clause from the scope config.
-    Supports country QID lists (SR-P-04 — scope is a config parameter).
+    Prefers 'bounding_box' (lat/lon BIND+FILTER — fast, coordinate-index-based).
+    Falls back to 'country_qids' (wdt:P17 VALUES join — slower, kept for compatibility).
     """
+    bbox = scope_config.get("bounding_box")
+    if bbox:
+        min_lat = float(bbox["min_lat"])
+        max_lat = float(bbox["max_lat"])
+        min_lon = float(bbox["min_lon"])
+        max_lon = float(bbox["max_lon"])
+        return (
+            f"BIND(geof:latitude(?coords) AS ?lat)\n"
+            f"  BIND(geof:longitude(?coords) AS ?lon)\n"
+            f"  FILTER(?lat >= {min_lat} && ?lat <= {max_lat} "
+            f"&& ?lon >= {min_lon} && ?lon <= {max_lon})"
+        )
     country_qids = scope_config.get("country_qids", [])
     if not country_qids:
         return ""

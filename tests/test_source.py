@@ -48,15 +48,18 @@ class TestScopeFilter:
     def test_empty_scope_returns_empty_string(self):
         assert _scope_filter({}) == ""
 
-    def test_single_country(self):
-        result = _scope_filter({"country_qids": ["Q142"]})
-        assert "wd:Q142" in result
-        assert "wdt:P17" in result
+    def test_bounding_box_preferred(self):
+        result = _scope_filter({"bounding_box": {"min_lat": 27, "max_lat": 72, "min_lon": -30, "max_lon": 45}})
+        assert "geof:latitude" in result
+        assert "geof:longitude" in result
+        assert "27" in result
+        assert "72" in result
 
-    def test_multiple_countries(self):
+    def test_country_qids_fallback(self):
         result = _scope_filter({"country_qids": ["Q142", "Q145"]})
         assert "wd:Q142" in result
         assert "wd:Q145" in result
+        assert "wdt:P17" in result
 
 
 class TestBuildQuery:
@@ -65,9 +68,13 @@ class TestBuildQuery:
         assert "wd:Q23413" in query
         assert "wd:Q1145776" in query
 
-    def test_subclass_traversal_present(self):
+    def test_direct_instance_of_present(self):
         query = _build_query(["Q23413"], "")
-        assert "wdt:P279*" in query
+        assert "wdt:P31" in query
+
+    def test_timeout_hint_present(self):
+        query = _build_query(["Q23413"], "")
+        assert "#TIMEOUT" in query
 
     def test_coordinates_filter_present(self):
         query = _build_query(["Q23413"], "")
