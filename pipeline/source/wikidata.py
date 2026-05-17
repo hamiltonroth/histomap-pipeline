@@ -33,13 +33,14 @@ _RATE_LIMIT_DELAY_S = 65
 
 # PREFIX declarations for WDQS (Blazegraph) queries.
 # wikibase/bd/geo are required for SERVICE wikibase:box.
+# schema: prefix removed — description and Wikipedia URLs are now fetched via
+# Wikidata wbgetentities API in the enrichment stage (avoids slow SPARQL OPTIONALs).
 _QUERY_PREFIXES = """\
 PREFIX wd: <http://www.wikidata.org/entity/>
 PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 PREFIX wikibase: <http://wikiba.se/ontology#>
 PREFIX bd: <http://www.bigdata.com/rdf#>
 PREFIX geo: <http://www.opengis.net/ont/geosparql#>
-PREFIX schema: <http://schema.org/>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 """
 
@@ -47,21 +48,13 @@ PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 def _build_query(qids: list[str], scope_filter: str) -> str:
     qid_values = " ".join(f"wd:{q}" for q in qids)
     return f"""{_QUERY_PREFIXES}
-SELECT DISTINCT ?place ?placeLabel ?coords ?desc ?image ?inception ?wpArticle WHERE {{
+SELECT DISTINCT ?place ?placeLabel ?coords ?image ?inception WHERE {{
   VALUES ?type {{ {qid_values} }}
   ?place wdt:P31 ?type .
 {scope_filter}
   OPTIONAL {{ ?place rdfs:label ?placeLabel . FILTER(LANG(?placeLabel) = "en") }}
   OPTIONAL {{ ?place wdt:P571 ?inception }}
   OPTIONAL {{ ?place wdt:P18 ?image }}
-  OPTIONAL {{
-    ?place schema:description ?desc .
-    FILTER(LANG(?desc) = "en")
-  }}
-  OPTIONAL {{
-    ?wpArticle schema:about ?place ;
-               schema:isPartOf <https://en.wikipedia.org/> .
-  }}
 }}
 """
 
@@ -257,7 +250,7 @@ class WikidataAdapter:
                 lat=lat,
                 inception=_parse_inception(binding.get("inception", {}).get("value")),
                 image_url=binding.get("image", {}).get("value") or None,
-                description=binding.get("desc", {}).get("value") or None,
-                wikipedia_url=binding.get("wpArticle", {}).get("value") or None,
+                # description and wikipedia_url are populated by enrichment
+                # via Wikidata wbgetentities API (avoids slow SPARQL OPTIONALs)
             ))
         return records

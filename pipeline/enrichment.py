@@ -20,9 +20,10 @@ from pipeline.models import PlaceRecord
 log = logging.getLogger(__name__)
 
 _MEDIAWIKI_API = "https://en.wikipedia.org/w/api.php"
+_WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 _COMMONS_THUMB_WIDTH = 800
 _SESSION_TIMEOUT = 30
-_BATCH_SIZE = 50        # MediaWiki API maximum titles per request
+_BATCH_SIZE = 50        # MediaWiki / Wikidata API maximum IDs per request
 _BATCH_DELAY_S = 1.0    # polite delay between batches (not per-record)
 
 
@@ -32,17 +33,70 @@ def enrich(records: list[PlaceRecord], config: dict) -> list[PlaceRecord]:
         if record.image_url:
             record.image_url = _resolve_thumbnail(record.image_url)
 
-    # Pass 2: batch-fetch Wikipedia summaries only for records that need them
-    # (have a Wikipedia article URL but no description from Wikidata)
-    needs_wiki = [r for r in records if r.wikipedia_url and not r.description]
+    session = requests.Session()
+    session.headers["User-Agent"] = "histomap-pipeline/0.1 (https://github.com/private)"
+
+    # Pass 2: batch-fetch English descriptions and Wikipedia URLs from Wikidata API.
+    # This replaces the schema:description and ?wpArticle SPARQL OPTIONALs, which
+    # were too slow on large result sets (5000+ rows with language-tagged lookups).
+    log.info("  Fetching Wikidata properties for %d records", len(records))
+    _fetch_wikidata_properties(records, session)
+
+    # Pass 3: batch-fetch Wikipedia summaries for records that now have a Wikipedia URL.
+    # Wikipedia extracts are richer than Wikidata short descriptions, so they overwrite.
+    needs_wiki = [r for r in records if r.wikipedia_url]
     if needs_wiki:
         log.info("  Fetching Wikipedia summaries for %d/%d records (batches of %d)",
                  len(needs_wiki), len(records), _BATCH_SIZE)
-        session = requests.Session()
-        session.headers["User-Agent"] = "histomap-pipeline/0.1 (https://github.com/private)"
         _batch_fetch_summaries(needs_wiki, session)
 
     return records
+
+
+def _fetch_wikidata_properties(records: list[PlaceRecord], session: requests.Session) -> None:
+    """
+    Batch-fetch English descriptions and Wikipedia URLs via the Wikidata wbgetentities API.
+    50 QIDs per request (API maximum). Sets record.description and record.wikipedia_url.
+    Failures are per-batch and logged; they never abort the pipeline.
+    """
+    n_batches = (len(records) + _BATCH_SIZE - 1) // _BATCH_SIZE
+    for batch_idx in range(n_batches):
+        batch = records[batch_idx * _BATCH_SIZE:(batch_idx + 1) * _BATCH_SIZE]
+        qid_list = "|".join(r.id for r in batch)
+        try:
+            resp = session.get(
+                _WIKIDATA_API,
+                params={
+                    "action": "wbgetentities",
+                    "ids": qid_list,
+                    "props": "descriptions|sitelinks",
+                    "sitefilter": "enwiki",
+                    "languages": "en",
+                    "format": "json",
+                },
+                timeout=_SESSION_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                entities = resp.json().get("entities", {})
+                for record in batch:
+                    entity = entities.get(record.id, {})
+                    desc = entity.get("descriptions", {}).get("en", {}).get("value")
+                    if desc:
+                        record.description = desc
+                    title = entity.get("sitelinks", {}).get("enwiki", {}).get("title")
+                    if title:
+                        record.wikipedia_url = (
+                            "https://en.wikipedia.org/wiki/"
+                            + urllib.parse.quote(title.replace(" ", "_"), safe=":/")
+                        )
+            else:
+                log.warning("Wikidata API HTTP %d for batch %d/%d",
+                            resp.status_code, batch_idx + 1, n_batches)
+        except Exception as exc:
+            log.warning("Wikidata batch fetch failed (batch %d/%d): %s",
+                        batch_idx + 1, n_batches, exc)
+        if batch_idx < n_batches - 1:
+            time.sleep(_BATCH_DELAY_S)
 
 
 def _batch_fetch_summaries(records: list[PlaceRecord], session: requests.Session) -> None:

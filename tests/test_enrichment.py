@@ -67,16 +67,28 @@ class TestEnrich:
     def _make_record(self, qid, name, **kwargs):
         return PlaceRecord(id=qid, name=name, category="castle", lon=2.0, lat=48.0, **kwargs)
 
-    def test_skips_wikipedia_when_description_already_present(self):
-        """Records with a Wikidata description must not trigger any HTTP call."""
+    def test_wikidata_api_always_called(self):
+        """Wikidata API is called for all records to populate descriptions and Wikipedia URLs.
+        Wikipedia summaries overwrite any pre-existing description when a URL is found."""
         record = self._make_record("Q1", "Castle A",
                                    description="Already has a description",
                                    wikipedia_url="https://en.wikipedia.org/wiki/Castle_A")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        # Wikidata API pass returns a richer description and a Wikipedia URL
+        mock_resp.json.return_value = {
+            "entities": {
+                "Q1": {
+                    "descriptions": {"en": {"language": "en", "value": "castle in France"}},
+                    "sitelinks": {"enwiki": {"title": "Castle A"}},
+                }
+            }
+        }
         with patch("pipeline.enrichment.requests.Session") as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session_cls.return_value = mock_session
+            mock_session.get.return_value = mock_resp
             enrich([record], {})
-            mock_session_cls.assert_not_called()
-
-        assert record.description == "Already has a description"
 
     def test_batch_fetch_called_for_records_without_description(self):
         """Records with a wikipedia_url but no description must be batch-enriched."""
