@@ -91,17 +91,24 @@ class TestBuildQuery:
         query = _build_query(["Q23413"], "  ?place wdt:P625 ?coords .")
         assert "SERVICE wikibase:label" not in query
 
-    def test_rdfs_label_present(self):
-        # Labels are fetched via OPTIONAL rdfs:label with LANG filter instead.
+    def test_no_rdfs_label_in_query(self):
+        # rdfs:label OPTIONAL removed — language-tagged label scans are too
+        # slow for large result sets.  Names are fetched via wbgetentities API.
         query = _build_query(["Q23413"], "  ?place wdt:P625 ?coords .")
-        assert "rdfs:label" in query
-        assert 'FILTER(LANG(?placeLabel) = "en")' in query
+        assert "rdfs:label" not in query
+        assert "FILTER(LANG" not in query
+
+    def test_limit_present(self):
+        # LIMIT bounds unbounded result sets to prevent WDQS 60s query timeout.
+        query = _build_query(["Q23413"], "  ?place wdt:P625 ?coords .")
+        assert "LIMIT" in query
 
     def test_prefix_declarations_present(self):
         query = _build_query(["Q23413"], "  ?place wdt:P625 ?coords .")
         assert "PREFIX wd:" in query
         assert "PREFIX wdt:" in query
         assert "PREFIX wikibase:" in query
+        assert "PREFIX rdfs:" not in query
 
     def test_coordinates_from_scope_filter(self):
         scope = _scope_filter({"bounding_box": {"min_lat": 27, "max_lat": 72, "min_lon": -30, "max_lon": 45}})

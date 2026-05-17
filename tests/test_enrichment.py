@@ -79,6 +79,7 @@ class TestEnrich:
         mock_resp.json.return_value = {
             "entities": {
                 "Q1": {
+                    "labels": {"en": {"language": "en", "value": "Castle A (Wikidata)"}},
                     "descriptions": {"en": {"language": "en", "value": "castle in France"}},
                     "sitelinks": {"enwiki": {"title": "Castle A"}},
                 }
@@ -89,6 +90,8 @@ class TestEnrich:
             mock_session_cls.return_value = mock_session
             mock_session.get.return_value = mock_resp
             enrich([record], {})
+
+        assert record.name == "Castle A (Wikidata)"
 
     def test_batch_fetch_called_for_records_without_description(self):
         """Records with a wikipedia_url but no description must be batch-enriched."""

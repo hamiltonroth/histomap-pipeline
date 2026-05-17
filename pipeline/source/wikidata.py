@@ -33,29 +33,30 @@ _RATE_LIMIT_DELAY_S = 65
 
 # PREFIX declarations for WDQS (Blazegraph) queries.
 # wikibase/bd/geo are required for SERVICE wikibase:box.
-# schema: prefix removed — description and Wikipedia URLs are now fetched via
-# Wikidata wbgetentities API in the enrichment stage (avoids slow SPARQL OPTIONALs).
+# rdfs: and schema: removed — names, descriptions, and Wikipedia URLs are all
+# fetched via the Wikidata wbgetentities API in the enrichment stage.
+# Language-tagged rdfs:label with FILTER(LANG=en) is prohibitively slow for
+# large result sets (millions of triple scans per row).
 _QUERY_PREFIXES = """\
 PREFIX wd: <http://www.wikidata.org/entity/>
 PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 PREFIX wikibase: <http://wikiba.se/ontology#>
 PREFIX bd: <http://www.bigdata.com/rdf#>
 PREFIX geo: <http://www.opengis.net/ont/geosparql#>
-PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 """
 
 
 def _build_query(qids: list[str], scope_filter: str) -> str:
     qid_values = " ".join(f"wd:{q}" for q in qids)
     return f"""{_QUERY_PREFIXES}
-SELECT DISTINCT ?place ?placeLabel ?coords ?image ?inception WHERE {{
+SELECT DISTINCT ?place ?coords ?inception ?image WHERE {{
   VALUES ?type {{ {qid_values} }}
   ?place wdt:P31 ?type .
 {scope_filter}
-  OPTIONAL {{ ?place rdfs:label ?placeLabel . FILTER(LANG(?placeLabel) = "en") }}
   OPTIONAL {{ ?place wdt:P571 ?inception }}
   OPTIONAL {{ ?place wdt:P18 ?image }}
 }}
+LIMIT 50000
 """
 
 
@@ -125,8 +126,9 @@ class WikidataAdapter:
         self._config = config
         self._clients: list[tuple[str, SPARQLWrapper]] = []
 
-        # If a SPARQL proxy is configured (e.g. Cloudflare Worker to bypass
-        # GitHub Actions IP blocks), use it as the first endpoint.
+        # When a Cloudflare Worker proxy is configured (CI environment), use it
+        # exclusively.  Direct WDQS is always 429-blocked from GitHub Actions IPs
+        # and its failures trigger a spurious 65s rate-limit delay each category.
         proxy_url = os.environ.get("SPARQL_PROXY_URL", "").strip()
         proxy_key = os.environ.get("SPARQL_PROXY_KEY", "").strip()
         if proxy_url:
@@ -136,14 +138,15 @@ class WikidataAdapter:
             proxy_client.setReturnFormat(JSON)
             proxy_client.setTimeout(60)
             self._clients.append(("Proxy", proxy_client))
-            log.info("SPARQL proxy configured: %s", proxy_url)
-
-        for name, url in _SPARQL_ENDPOINTS:
-            client = SPARQLWrapper(url)
-            client.addCustomHttpHeader("User-Agent", _USER_AGENT)
-            client.setReturnFormat(JSON)
-            client.setTimeout(25)  # stay under Worker's 28s upstream abort
-            self._clients.append((name, client))
+            log.info("SPARQL proxy configured — using proxy exclusively: %s", proxy_url)
+        else:
+            # Local development: use direct WDQS (no CI IP block locally).
+            for name, url in _SPARQL_ENDPOINTS:
+                client = SPARQLWrapper(url)
+                client.addCustomHttpHeader("User-Agent", _USER_AGENT)
+                client.setReturnFormat(JSON)
+                client.setTimeout(60)
+                self._clients.append((name, client))
 
     def fetch_all(self) -> list[PlaceRecord]:
         scope = self._config.get("geographic_scope", {})
@@ -204,7 +207,8 @@ class WikidataAdapter:
                 try:
                     client.setQuery(query)
                     raw = client.queryAndConvert()
-                    if ep_name != _SPARQL_ENDPOINTS[0][0]:
+                    primary = self._clients[0][0] if self._clients else ""
+                    if ep_name != primary:
                         log.info("    Succeeded via fallback endpoint %s", ep_name)
                     return self._parse_results(raw, category), was_rate_limited
                 except Exception as exc:
@@ -244,13 +248,13 @@ class WikidataAdapter:
 
             records.append(PlaceRecord(
                 id=qid,
-                name=binding.get("placeLabel", {}).get("value", ""),
+                name="",  # populated by enrichment via wbgetentities labels
                 category=category,
                 lon=lon,
                 lat=lat,
                 inception=_parse_inception(binding.get("inception", {}).get("value")),
                 image_url=binding.get("image", {}).get("value") or None,
-                # description and wikipedia_url are populated by enrichment
-                # via Wikidata wbgetentities API (avoids slow SPARQL OPTIONALs)
+                # name, description, and wikipedia_url are all populated by
+                # the enrichment stage via the Wikidata wbgetentities API.
             ))
         return records

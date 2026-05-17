@@ -69,7 +69,7 @@ def _fetch_wikidata_properties(records: list[PlaceRecord], session: requests.Ses
                 params={
                     "action": "wbgetentities",
                     "ids": qid_list,
-                    "props": "descriptions|sitelinks",
+                    "props": "labels|descriptions|sitelinks",
                     "sitefilter": "enwiki",
                     "languages": "en",
                     "format": "json",
@@ -80,6 +80,9 @@ def _fetch_wikidata_properties(records: list[PlaceRecord], session: requests.Ses
                 entities = resp.json().get("entities", {})
                 for record in batch:
                     entity = entities.get(record.id, {})
+                    label = entity.get("labels", {}).get("en", {}).get("value")
+                    if label:
+                        record.name = label
                     desc = entity.get("descriptions", {}).get("en", {}).get("value")
                     if desc:
                         record.description = desc
