@@ -11,6 +11,7 @@ Nothing below this module knows about SPARQL or Wikidata QIDs.
 """
 
 import logging
+import os
 import time
 from urllib.parse import urlparse
 
@@ -20,8 +21,7 @@ from pipeline.models import PlaceRecord
 
 log = logging.getLogger(__name__)
 
-# Endpoints tried in order. QLever is a community-hosted Wikidata SPARQL mirror
-# that runs on different infrastructure and is not subject to WDQS outage throttle rules.
+# Comment: kept for local dev / fallback only; in CI the proxy is used first.
 _SPARQL_ENDPOINTS = [
     ("QLever", "https://qlever.cs.uni-freiburg.de/api/wikidata"),
     ("WDQS",   "https://query.wikidata.org/sparql"),
@@ -115,6 +115,20 @@ class WikidataAdapter:
     def __init__(self, config: dict) -> None:
         self._config = config
         self._clients: list[tuple[str, SPARQLWrapper]] = []
+
+        # If a SPARQL proxy is configured (e.g. Cloudflare Worker to bypass
+        # GitHub Actions IP blocks), use it as the first endpoint.
+        proxy_url = os.environ.get("SPARQL_PROXY_URL", "").strip()
+        proxy_key = os.environ.get("SPARQL_PROXY_KEY", "").strip()
+        if proxy_url:
+            proxy_client = SPARQLWrapper(proxy_url)
+            proxy_client.addCustomHttpHeader("User-Agent", _USER_AGENT)
+            proxy_client.addCustomHttpHeader("X-Proxy-Key", proxy_key)
+            proxy_client.setReturnFormat(JSON)
+            proxy_client.setTimeout(60)
+            self._clients.append(("Proxy", proxy_client))
+            log.info("SPARQL proxy configured: %s", proxy_url)
+
         for name, url in _SPARQL_ENDPOINTS:
             client = SPARQLWrapper(url)
             client.addCustomHttpHeader("User-Agent", _USER_AGENT)
