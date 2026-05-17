@@ -14,6 +14,7 @@ Prints row count per category and a small result sample.
 
 import argparse
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -51,11 +52,15 @@ parser = argparse.ArgumentParser()
 parser.add_argument("categories", nargs="*")
 parser.add_argument("--qid", dest="qids", action="append", default=[])
 parser.add_argument("--limit", type=int, default=3)
-parser.add_argument("--timeout", type=int, default=30)
-parser.add_argument("--endpoint", default="https://qlever.cs.uni-freiburg.de/api/wikidata",
-                    help="SPARQL endpoint URL (default: QLever Wikidata)")
+parser.add_argument("--timeout", type=int, default=25)
+parser.add_argument("--endpoint",
+                    default=os.environ.get("SPARQL_PROXY_URL", "").strip() or "https://query.wikidata.org/sparql",
+                    help="SPARQL endpoint URL (defaults to SPARQL_PROXY_URL env var, then WDQS)")
+parser.add_argument("--proxy-key",
+                    default=os.environ.get("SPARQL_PROXY_KEY", "").strip(),
+                    help="X-Proxy-Key header value (defaults to SPARQL_PROXY_KEY env var)")
 parser.add_argument("--sleep", type=int, default=2,
-                    help="Seconds to sleep between queries (default 2; use 65 for WDQS)")
+                    help="Seconds to sleep between queries (default 2)")
 args = parser.parse_args()
 
 config = load_query_config()
@@ -70,6 +75,9 @@ scope_clause = _scope_filter(config.get("geographic_scope", {}))
 
 sparql = SPARQLWrapper(args.endpoint)
 sparql.addCustomHttpHeader("User-Agent", "histomap-validate/0.1 (mailto:rothhamilton@gmail.com)")
+if args.proxy_key:
+    sparql.addCustomHttpHeader("X-Proxy-Key", args.proxy_key)
+    logging.getLogger().info("Using proxy: %s", args.endpoint)
 sparql.setReturnFormat(JSON)
 sparql.setTimeout(args.timeout)
 

@@ -32,7 +32,7 @@ _RETRY_DELAY_S = 10
 _RATE_LIMIT_DELAY_S = 65
 
 # PREFIX declarations for WDQS (Blazegraph) queries.
-# wikibase/bd/geo are required for SERVICE wikibase:box and SERVICE wikibase:label.
+# wikibase/bd/geo are required for SERVICE wikibase:box.
 _QUERY_PREFIXES = """\
 PREFIX wd: <http://www.wikidata.org/entity/>
 PREFIX wdt: <http://www.wikidata.org/prop/direct/>
@@ -40,6 +40,7 @@ PREFIX wikibase: <http://wikiba.se/ontology#>
 PREFIX bd: <http://www.bigdata.com/rdf#>
 PREFIX geo: <http://www.opengis.net/ont/geosparql#>
 PREFIX schema: <http://schema.org/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 """
 
 
@@ -50,6 +51,7 @@ SELECT DISTINCT ?place ?placeLabel ?coords ?desc ?image ?inception ?wpArticle WH
   VALUES ?type {{ {qid_values} }}
   ?place wdt:P31 ?type .
 {scope_filter}
+  OPTIONAL {{ ?place rdfs:label ?placeLabel . FILTER(LANG(?placeLabel) = "en") }}
   OPTIONAL {{ ?place wdt:P571 ?inception }}
   OPTIONAL {{ ?place wdt:P18 ?image }}
   OPTIONAL {{
@@ -60,7 +62,6 @@ SELECT DISTINCT ?place ?placeLabel ?coords ?desc ?image ?inception ?wpArticle WH
     ?wpArticle schema:about ?place ;
                schema:isPartOf <https://en.wikipedia.org/> .
   }}
-  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en" . }}
 }}
 """
 

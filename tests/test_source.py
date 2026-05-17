@@ -86,13 +86,16 @@ class TestBuildQuery:
         query = _build_query(["Q23413"], "  ?place wdt:P625 ?coords .")
         assert "wdt:P31" in query
 
-    def test_wikibase_label_service_present(self):
+    def test_no_wikibase_label_service(self):
+        # SERVICE wikibase:label was removed (too slow for large result sets).
         query = _build_query(["Q23413"], "  ?place wdt:P625 ?coords .")
-        assert "SERVICE wikibase:label" in query
+        assert "SERVICE wikibase:label" not in query
 
-    def test_no_rdfs_label(self):
+    def test_rdfs_label_present(self):
+        # Labels are fetched via OPTIONAL rdfs:label with LANG filter instead.
         query = _build_query(["Q23413"], "  ?place wdt:P625 ?coords .")
-        assert "rdfs:label" not in query
+        assert "rdfs:label" in query
+        assert 'FILTER(LANG(?placeLabel) = "en")' in query
 
     def test_prefix_declarations_present(self):
         query = _build_query(["Q23413"], "  ?place wdt:P625 ?coords .")
