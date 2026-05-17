@@ -50,45 +50,58 @@ class TestParseInception:
 
 
 class TestScopeFilter:
-    def test_empty_scope_returns_empty_string(self):
-        assert _scope_filter({}) == ""
+    def test_empty_scope_returns_plain_coords_triple(self):
+        result = _scope_filter({})
+        assert "wdt:P625" in result
 
     def test_country_qids(self):
         result = _scope_filter({"country_qids": ["Q142", "Q145"]})
         assert "wd:Q142" in result
         assert "wd:Q145" in result
         assert "wdt:P17" in result
+        assert "wdt:P625" in result
 
-    def test_bounding_box_without_country_qids_returns_empty(self):
-        # bounding_box is not used in SPARQL; geographic scope requires country_qids
+    def test_bounding_box_uses_wikibase_box(self):
         result = _scope_filter({"bounding_box": {"min_lat": 27, "max_lat": 72, "min_lon": -30, "max_lon": 45}})
-        assert result == ""
+        assert "SERVICE wikibase:box" in result
+        assert "wikibase:cornerWest" in result
+        assert "wikibase:cornerEast" in result
+        assert "wdt:P625" in result
+        assert "-30" in result
+        assert "27" in result
+
+    def test_empty_scope_returns_plain_coords(self):
+        result = _scope_filter({})
+        assert "wdt:P625" in result
+        assert "wikibase:box" not in result
 
 
 class TestBuildQuery:
     def test_qids_in_query(self):
-        query = _build_query(["Q23413", "Q1145776"], "")
+        query = _build_query(["Q23413", "Q1145776"], "  ?place wdt:P625 ?coords .")
         assert "wd:Q23413" in query
         assert "wd:Q1145776" in query
 
     def test_direct_instance_of_present(self):
-        query = _build_query(["Q23413"], "")
+        query = _build_query(["Q23413"], "  ?place wdt:P625 ?coords .")
         assert "wdt:P31" in query
 
-    def test_rdfs_label_present(self):
-        query = _build_query(["Q23413"], "")
-        assert "rdfs:label" in query
+    def test_wikibase_label_service_present(self):
+        query = _build_query(["Q23413"], "  ?place wdt:P625 ?coords .")
+        assert "SERVICE wikibase:label" in query
 
-    def test_no_service_wikibase_label(self):
-        query = _build_query(["Q23413"], "")
-        assert "SERVICE wikibase:label" not in query
+    def test_no_rdfs_label(self):
+        query = _build_query(["Q23413"], "  ?place wdt:P625 ?coords .")
+        assert "rdfs:label" not in query
 
     def test_prefix_declarations_present(self):
-        query = _build_query(["Q23413"], "")
+        query = _build_query(["Q23413"], "  ?place wdt:P625 ?coords .")
         assert "PREFIX wd:" in query
         assert "PREFIX wdt:" in query
-        assert "PREFIX rdfs:" in query
+        assert "PREFIX wikibase:" in query
 
-    def test_coordinates_filter_present(self):
-        query = _build_query(["Q23413"], "")
+    def test_coordinates_from_scope_filter(self):
+        scope = _scope_filter({"bounding_box": {"min_lat": 27, "max_lat": 72, "min_lon": -30, "max_lon": 45}})
+        query = _build_query(["Q23413"], scope)
         assert "wdt:P625" in query
+        assert "SERVICE wikibase:box" in query

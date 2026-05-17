@@ -8,54 +8,11 @@
 output_dir: output
 
 # Geographic scope for v1 (SR-P-04, OQ-01: Europe at launch).
-# Uses a VALUES + wdt:P17 country join — portable across WDQS and QLever.
-# (QLever handles this join efficiently; it is the primary endpoint.)
+# Uses SERVICE wikibase:box — a WDQS spatial index, typically 2-5s per category.
+# Rough Europe bounds: lat 27–72 N, lon -30–45 E.
 geographic_scope:
-  country_qids:
-    # Western Europe
-    - Q145    # United Kingdom
-    - Q142    # France
-    - Q183    # Germany
-    - Q29     # Spain
-    - Q45     # Portugal
-    - Q38     # Italy
-    - Q40     # Austria
-    - Q55     # Netherlands
-    - Q31     # Belgium
-    - Q32     # Luxembourg
-    - Q39     # Switzerland
-    - Q347    # Liechtenstein
-    - Q27     # Ireland
-
-    # Northern Europe
-    - Q35     # Denmark
-    - Q20     # Norway
-    - Q34     # Sweden
-    - Q33     # Finland
-    - Q189    # Iceland
-
-    # Eastern Europe
-    - Q36     # Poland
-    - Q213    # Czech Republic
-    - Q214    # Slovakia
-    - Q28     # Hungary
-    - Q218    # Romania
-    - Q219    # Bulgaria
-    - Q220    # Serbia (note: use current Wikidata QID)
-    - Q224    # Croatia
-    - Q225    # Bosnia and Herzegovina
-    - Q236    # Montenegro
-    - Q229    # North Macedonia
-    - Q222    # Albania
-    - Q41     # Greece
-    - Q241    # Cyprus
-
-    # Baltic
-    - Q211    # Latvia
-    - Q212    # Estonia
-    - Q37     # Lithuania
-
-    # Post-Soviet Europe
-    - Q230    # Ukraine
-    - Q184    # Belarus
-    - Q233    # Moldova
+  bounding_box:
+    min_lat: 27
+    max_lat: 72
+    min_lon: -30
+    max_lon: 45

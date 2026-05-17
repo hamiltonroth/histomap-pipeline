@@ -48,6 +48,9 @@ export default {
       method: request.method,
       headers: forwardHeaders,
       body: request.method === "POST" ? request.body : undefined,
+      // Abort after 28s to return a clean 504 before CF's 30s hard limit kills
+      // the connection with a reset, which the pipeline sees as a read timeout.
+      signal: AbortSignal.timeout(28000),
     });
 
     return new Response(resp.body, {

@@ -21,23 +21,25 @@ from pipeline.models import PlaceRecord
 
 log = logging.getLogger(__name__)
 
-# Comment: kept for local dev / fallback only; in CI the proxy is used first.
+# WDQS (via Cloudflare proxy) is the only production endpoint.
+# QLever is excluded: it returns 403 from GitHub Actions IP ranges.
 _SPARQL_ENDPOINTS = [
-    ("QLever", "https://qlever.cs.uni-freiburg.de/api/wikidata"),
-    ("WDQS",   "https://query.wikidata.org/sparql"),
+    ("WDQS", "https://query.wikidata.org/sparql"),
 ]
 _USER_AGENT = "histomap-pipeline/0.1 (mailto:rothhamilton@gmail.com)"
 _RETRY_ATTEMPTS = 3
 _RETRY_DELAY_S = 10
 _RATE_LIMIT_DELAY_S = 65
 
-# Explicit PREFIX declarations — required by some endpoints (e.g. QLever) that
-# do not inject Wikidata prefixes automatically.
+# PREFIX declarations for WDQS (Blazegraph) queries.
+# wikibase/bd/geo are required for SERVICE wikibase:box and SERVICE wikibase:label.
 _QUERY_PREFIXES = """\
 PREFIX wd: <http://www.wikidata.org/entity/>
 PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wikibase: <http://wikiba.se/ontology#>
+PREFIX bd: <http://www.bigdata.com/rdf#>
+PREFIX geo: <http://www.opengis.net/ont/geosparql#>
 PREFIX schema: <http://schema.org/>
-PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 """
 
 
@@ -47,9 +49,7 @@ def _build_query(qids: list[str], scope_filter: str) -> str:
 SELECT DISTINCT ?place ?placeLabel ?coords ?desc ?image ?inception ?wpArticle WHERE {{
   VALUES ?type {{ {qid_values} }}
   ?place wdt:P31 ?type .
-  ?place wdt:P625 ?coords .
-  {scope_filter}
-  OPTIONAL {{ ?place rdfs:label ?placeLabel . FILTER(LANG(?placeLabel) = "en") }}
+{scope_filter}
   OPTIONAL {{ ?place wdt:P571 ?inception }}
   OPTIONAL {{ ?place wdt:P18 ?image }}
   OPTIONAL {{
@@ -60,21 +60,36 @@ SELECT DISTINCT ?place ?placeLabel ?coords ?desc ?image ?inception ?wpArticle WH
     ?wpArticle schema:about ?place ;
                schema:isPartOf <https://en.wikipedia.org/> .
   }}
+  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en" . }}
 }}
 """
 
 
 def _scope_filter(scope_config: dict) -> str:
     """
-    Build a SPARQL filter clause from the scope config.
-    Uses a VALUES + wdt:P17 country join — portable across WDQS and QLever.
-    QLever handles this join efficiently; WDQS may be slower on large categories.
+    Build a SPARQL block that retrieves ?coords and filters by geography.
+    bounding_box: uses SERVICE wikibase:box — fast WDQS spatial index, typically 2-5s.
+    country_qids: uses VALUES + wdt:P17 join — portable fallback, slower.
+    Empty config: plain coords triple with no geographic filter.
     """
+    bbox = scope_config.get("bounding_box")
+    if bbox:
+        min_lat = float(bbox["min_lat"])
+        max_lat = float(bbox["max_lat"])
+        min_lon = float(bbox["min_lon"])
+        max_lon = float(bbox["max_lon"])
+        return (
+            f'  SERVICE wikibase:box {{\n'
+            f'    ?place wdt:P625 ?coords .\n'
+            f'    bd:serviceParam wikibase:cornerWest "Point({min_lon} {min_lat})"^^geo:wktLiteral .\n'
+            f'    bd:serviceParam wikibase:cornerEast "Point({max_lon} {max_lat})"^^geo:wktLiteral .\n'
+            f'  }}'
+        )
     country_qids = scope_config.get("country_qids", [])
-    if not country_qids:
-        return ""
-    values = " ".join(f"wd:{q}" for q in country_qids)
-    return f"VALUES ?country {{ {values} }}\n  ?place wdt:P17 ?country ."
+    if country_qids:
+        values = " ".join(f"wd:{q}" for q in country_qids)
+        return f"  ?place wdt:P625 ?coords .\n  VALUES ?country {{ {values} }}\n  ?place wdt:P17 ?country ."
+    return "  ?place wdt:P625 ?coords ."
 
 
 def _parse_coords(coords_str: str) -> tuple[float, float] | None:
@@ -133,7 +148,7 @@ class WikidataAdapter:
             client = SPARQLWrapper(url)
             client.addCustomHttpHeader("User-Agent", _USER_AGENT)
             client.setReturnFormat(JSON)
-            client.setTimeout(60)
+            client.setTimeout(25)  # stay under Worker's 28s upstream abort
             self._clients.append((name, client))
 
     def fetch_all(self) -> list[PlaceRecord]:
